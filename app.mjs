@@ -8,8 +8,8 @@ import {
   copyBoard,
   createPuzzle,
   isComplete,
-  nextDeduction,
 } from "./puzzle.mjs";
+import { hintChanges, nextHint } from "./hints.mjs";
 import { icon } from "./icons.mjs";
 
 const $ = (selector) => document.querySelector(selector);
@@ -336,7 +336,7 @@ function refreshBoard() {
       i === selection ? "selected" : "",
       related ? "related" : "",
       errors.includes(i) ? "error" : "",
-      hint?.i === i ? "hinted" : "",
+      hint?.cell === i ? "hinted" : "",
     ].join(" ");
     button.setAttribute("aria-selected", i === selection);
     button.tabIndex = i === (selection < 0 ? 0 : selection) ? 0 : -1;
@@ -379,7 +379,10 @@ function refreshBoard() {
   if (!game.won) {
     $('[data-action="undo"]').disabled = !game.history.length;
     $('[data-action="hint"] span').textContent =
-      hint && !hint.error ? "Vis" : "Hint";
+      hint ? (hint.error ? "Ret fejl" : "Vis") : "Hint";
+    $('[data-action="hint"]').title = hint
+      ? (hint.error ? "Ryd de forkerte værdier" : "Vis løsningen på hintet")
+      : "Få et hint";
     $(".feedback").textContent = feedback;
   }
   updateHeader();
@@ -402,7 +405,7 @@ function say(message, transient = true) {
   refreshBoard();
 }
 function select(i, focus = false) {
-  if (i !== selection) clearFeedback();
+  if (i !== selection && !hint) clearFeedback();
   selection = i;
   refreshBoard();
   if (focus) document.querySelector('[data-cell="' + i + '"]').focus();
@@ -443,8 +446,9 @@ function erase() {
 function undo() {
   const last = game.history.pop();
   if (!last) return;
-  game.board[last.i] = last.previous;
-  selection = last.i;
+  const changes = last.changes ?? [last];
+  for (const { i, previous } of changes) game.board[i] = previous;
+  selection = changes[0].i;
   clearFeedback();
   persist();
   refreshBoard();
@@ -461,44 +465,43 @@ function check() {
   );
 }
 function giveHint() {
-  if (hint && !hint.error) {
-    const { i, k, value } = hint;
-    selection = i;
-    setValue(k, value);
+  if (hint) {
+    const changes = hintChanges(game.board, hint, puzzle.solution);
+    game.history.push({
+      changes: changes.map(({ i, previous }) => ({ i, previous })),
+    });
+    for (const { i, next } of changes) game.board[i] = next;
+    selection = changes[0].i;
+    afterMove();
     return;
   }
   clearFeedback();
   const wrong = conflicts(game.board, puzzle.solution);
   if (wrong.length) {
     selection = wrong[0];
-    errors = [selection];
-    hint = { i: selection, error: true };
+    errors = wrong;
+    hint = { cell: selection, cells: wrong, error: true };
     say(
-      "Tjek " +
-        coordinate(selection, puzzle.size) +
-        ". " +
-        (game.board[selection][0] !== 0 &&
-        game.board[selection][0] !== puzzle.solution[selection][0]
-          ? "Tallet"
-          : "Farven") +
-        " skal rettes.",
+      wrong.length > 1
+        ? wrong.length + " felter skal rettes. Se efter ! på brættet."
+        : "Tjek " +
+          coordinate(selection, puzzle.size) +
+          ". " +
+          (game.board[selection][0] !== 0 &&
+          game.board[selection][0] !== puzzle.solution[selection][0]
+            ? "Tallet"
+            : "Farven") +
+          " skal rettes.",
       false,
     );
     return;
   }
-  hint = nextDeduction(game.board);
+  hint = nextHint(game.board);
   if (!hint) return;
-  selection = hint.i;
-  const subject = hint.k ? COLORS[hint.value] : "tallet " + hint.value;
-  const clues = {
-    cell: "Kun " + (hint.k ? "én farve" : "ét tal") + " passer her.",
-    row: "I denne række kan " + subject + " kun stå her.",
-    column: "I denne kolonne kan " + subject + " kun stå her.",
-    pair: "Et bestemt tal-farve-par kan kun stå her.",
-  };
+  selection = hint.cell ?? -1;
   game.hints++;
   persist();
-  say(coordinate(selection, puzzle.size) + " · " + clues[hint.reason], false);
+  say(hint.message, false);
 }
 
 function raised(action, label) {

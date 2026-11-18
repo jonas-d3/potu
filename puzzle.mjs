@@ -56,7 +56,7 @@ function shuffle(items, random) {
 }
 
 // Each legal pair must fit the cell's givens, both lines, and the whole board.
-function candidates(board) {
+function candidates(board, usePairs = true) {
   const { peers, pairs } = layouts[board.length];
   return board.map(([n, c], i) => {
     if (n && c) return [[n, c]];
@@ -65,16 +65,16 @@ function candidates(board) {
         (!n || n === a) &&
         (!c || c === b) &&
         !peers[i].some((j) => board[j][0] === a || board[j][1] === b) &&
-        !board.some(
-          ([otherN, otherC], j) => j !== i && otherN === a && otherC === b,
-        ),
+        (!usePairs ||
+          !board.some(
+            ([otherN, otherC], j) => j !== i && otherN === a && otherC === b,
+          )),
     );
   });
 }
 
-export function nextDeduction(board) {
-  const { size, values, indices, lines, pairs } = layouts[board.length];
-  const options = candidates(board);
+function cellDeduction(board, options) {
+  const { indices } = layouts[board.length];
   for (const i of indices) {
     for (const k of [0, 1]) {
       if (board[i][k] || !options[i].length) continue;
@@ -83,6 +83,11 @@ export function nextDeduction(board) {
         return { i, k, value, reason: "cell" };
     }
   }
+  return null;
+}
+
+function* lineDeductions(board, options) {
+  const { size, values, lines } = layouts[board.length];
   for (const [lineIndex, line] of lines.entries()) {
     for (const k of [0, 1]) {
       for (const value of values) {
@@ -90,16 +95,27 @@ export function nextDeduction(board) {
           options[i].some((pair) => pair[k] === value),
         );
         if (places.length === 1 && !board[places[0]][k]) {
-          return {
-            i: places[0],
-            k,
-            value,
-            reason: lineIndex < size ? "row" : "column",
+          yield {
+            step: {
+              i: places[0],
+              k,
+              value,
+              reason: lineIndex < size ? "row" : "column",
+            },
+            placed: board.filter((cell) => cell[k] === value).length,
+            filled: line.reduce(
+              (sum, i) => sum + board[i].filter(Boolean).length,
+              0,
+            ),
           };
         }
       }
     }
   }
+}
+
+function pairDeduction(board, options) {
+  const { indices, pairs } = layouts[board.length];
   for (const [n, c] of pairs) {
     const places = indices.filter((i) =>
       options[i].some((pair) => pair[0] === n && pair[1] === c),
@@ -112,6 +128,43 @@ export function nextDeduction(board) {
       return { i, k: 1, value: c, reason: "pair", pair: [n, c] };
   }
   return null;
+}
+
+export function nextDeduction(board) {
+  const options = candidates(board);
+  return (
+    cellDeduction(board, options) ??
+    lineDeductions(board, options).next().value?.step ??
+    pairDeduction(board, options)
+  );
+}
+
+// Teaching order is separate from generation's stable grading order so saved
+// puzzle seeds keep producing exactly the same boards.
+export function nextHintDeduction(board) {
+  const simple = cellDeduction(board, candidates(board, false));
+  if (simple) return simple;
+
+  const { size } = layouts[board.length];
+  const options = candidates(board);
+  const lines = [...lineDeductions(board, options)];
+  const bestLine = (choices) =>
+    choices.reduce(
+      (best, candidate) =>
+        !best ||
+        candidate.placed > best.placed ||
+        (candidate.placed === best.placed && candidate.filled > best.filled)
+          ? candidate
+          : best,
+      null,
+    )?.step;
+
+  return (
+    bestLine(lines.filter((line) => line.placed === size - 1)) ??
+    cellDeduction(board, options) ??
+    bestLine(lines) ??
+    pairDeduction(board, options)
+  );
 }
 
 function solveByLogic(givens, solution) {
